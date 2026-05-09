@@ -5,7 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 
-const version = '0.1.2';
+const version = '0.1.3';
+const telegramMessageLimit = 3900;
 const scriptPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(scriptPath), '..');
 const home = os.homedir();
@@ -23,7 +24,9 @@ const config = {
   stateDir: env('KIRO_CONNECT_STATE_DIR') || path.join(home, '.kiro-connect'),
   timeoutMs: Number(env('KIRO_CONNECT_TIMEOUT_MS') || 900000),
   trustAllTools: parseBool(env('KIRO_CONNECT_TRUST_ALL_TOOLS'), true),
-  trustTools: env('KIRO_CONNECT_TRUST_TOOLS')
+  trustTools: env('KIRO_CONNECT_TRUST_TOOLS'),
+  streamOutput: parseBool(env('KIRO_CONNECT_STREAM_OUTPUT'), true),
+  streamIntervalMs: Number(env('KIRO_CONNECT_STREAM_INTERVAL_MS') || 1200)
 };
 
 const argv = process.argv.slice(2);
@@ -341,15 +344,21 @@ async function runAndReply(chatId, args) {
   const finalArgs = withDefaultTrustArgs(args);
   log(`chat=${chatId} cwd=${chat.workDir} run: ${config.kiroCli} ${finalArgs.join(' ')}`);
 
-  const result = await runKiro(finalArgs, { cwd: chat.workDir });
-  const header = result.timedOut
-    ? `Command timed out after ${config.timeoutMs} ms.\n\n`
-    : result.code === 0
-      ? ''
-      : `Command exited with code ${result.code}.\n\n`;
+  if (!config.streamOutput) {
+    const result = await runKiro(finalArgs, { cwd: chat.workDir });
+    const header = resultStatusText(result);
+    const body = stripAnsi([result.stdout, result.stderr].filter(Boolean).join('\n').trim());
+    await sendMessage(chatId, `${header}${body || '(no output)'}`);
+    return;
+  }
 
-  const body = stripAnsi([result.stdout, result.stderr].filter(Boolean).join('\n').trim());
-  await sendMessage(chatId, header + (body || '(no output)'));
+  const stream = createTelegramStream(chatId);
+  await stream.start();
+  const result = await runKiro(finalArgs, {
+    cwd: chat.workDir,
+    onOutput: chunk => stream.append(chunk)
+  });
+  await stream.finish(resultStatusText(result).trim());
 }
 
 function runKiro(args, options) {
@@ -370,20 +379,127 @@ function runKiro(args, options) {
     }, config.timeoutMs);
 
     child.stdout.on('data', chunk => {
-      stdout += chunk.toString('utf8');
+      const text = chunk.toString('utf8');
+      stdout += text;
+      options.onOutput?.(text, 'stdout');
     });
     child.stderr.on('data', chunk => {
-      stderr += chunk.toString('utf8');
+      const text = chunk.toString('utf8');
+      stderr += text;
+      options.onOutput?.(text, 'stderr');
     });
     child.on('error', err => {
       clearTimeout(timer);
-      resolve({ code: 1, stdout, stderr: `${stderr}\n${err.message}`.trim(), timedOut });
+      stderr = `${stderr}\n${err.message}`.trim();
+      options.onOutput?.(`\n${err.message}`, 'stderr');
+      resolve({ code: 1, stdout, stderr, timedOut });
     });
     child.on('close', code => {
       clearTimeout(timer);
       resolve({ code, stdout, stderr, timedOut });
     });
   });
+}
+
+function resultStatusText(result) {
+  if (result.timedOut) return `Command timed out after ${config.timeoutMs} ms.\n\n`;
+  if (result.code !== 0) return `Command exited with code ${result.code}.\n\n`;
+  return '';
+}
+
+function createTelegramStream(chatId) {
+  let output = '';
+  let currentStart = 0;
+  let currentMessageId = null;
+  let currentRendered = '';
+  let flushTimer = null;
+  let flushQueue = Promise.resolve();
+  let closed = false;
+
+  async function start() {
+    if (currentMessageId) return;
+    const message = await sendSingleMessage(chatId, 'Kiro is running...');
+    currentMessageId = message.message_id;
+    currentRendered = 'Kiro is running...';
+  }
+
+  function append(chunk) {
+    const text = stripAnsi(chunk);
+    if (!text) return;
+    output += text;
+    if (!closed) scheduleFlush();
+  }
+
+  async function finish(notice = '') {
+    closed = true;
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    await queueFlush();
+    if (!output.trim()) {
+      await upsertCurrent(`${notice ? `${notice}\n` : ''}(no output)`);
+      return;
+    }
+    if (notice) {
+      await sendMessage(chatId, notice);
+    }
+  }
+
+  function scheduleFlush() {
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      void queueFlush();
+    }, Math.max(250, config.streamIntervalMs));
+  }
+
+  function queueFlush() {
+    flushQueue = flushQueue
+      .then(flushNow)
+      .catch(err => log(`stream flush failed: ${err.message}`));
+    return flushQueue;
+  }
+
+  async function flushNow() {
+    await start();
+    if (!output) return;
+
+    while (output.length - currentStart > telegramMessageLimit) {
+      await upsertCurrent(output.slice(currentStart, currentStart + telegramMessageLimit));
+      currentStart += telegramMessageLimit;
+      currentMessageId = null;
+      currentRendered = '';
+    }
+
+    const chunk = output.slice(currentStart);
+    if (chunk) {
+      await upsertCurrent(chunk);
+    }
+  }
+
+  async function upsertCurrent(text) {
+    const safeText = String(text || '(empty)').slice(0, telegramMessageLimit);
+    if (!currentMessageId) {
+      const message = await sendSingleMessage(chatId, safeText);
+      currentMessageId = message.message_id;
+      currentRendered = safeText;
+      return;
+    }
+    if (safeText === currentRendered) return;
+
+    try {
+      await editMessageText(chatId, currentMessageId, safeText);
+      currentRendered = safeText;
+    } catch (err) {
+      if (String(err.message || '').includes('message is not modified')) return;
+      const message = await sendSingleMessage(chatId, safeText);
+      currentMessageId = message.message_id;
+      currentRendered = safeText;
+    }
+  }
+
+  return { start, append, finish };
 }
 
 function withDefaultTrustArgs(args) {
@@ -553,23 +669,27 @@ async function telegram(method, payload) {
 }
 
 async function sendMessage(chatId, text, extra = {}) {
-  const chunks = chunkText(String(text || ''), 3900);
+  const chunks = chunkText(String(text || ''), telegramMessageLimit);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
-    await telegram('sendMessage', {
-      chat_id: chatId,
-      text: chunk,
-      disable_web_page_preview: true,
-      ...(i === 0 ? extra : {})
-    });
+    await sendSingleMessage(chatId, chunk, i === 0 ? extra : {});
   }
+}
+
+async function sendSingleMessage(chatId, text, extra = {}) {
+  return telegram('sendMessage', {
+    chat_id: chatId,
+    text: String(text || '(empty)').slice(0, telegramMessageLimit),
+    disable_web_page_preview: true,
+    ...extra
+  });
 }
 
 async function editMessageText(chatId, messageId, text, extra = {}) {
   return telegram('editMessageText', {
     chat_id: chatId,
     message_id: messageId,
-    text: String(text || '').slice(0, 3900),
+    text: String(text || '(empty)').slice(0, telegramMessageLimit),
     disable_web_page_preview: true,
     ...extra
   });
@@ -755,6 +875,7 @@ function statusText(chatId, chat) {
     `Model: ${chat.model || '(Kiro default)'}`,
     `Agent: ${chat.agent || '(Kiro default)'}`,
     `Trust all tools: ${config.trustAllTools ? 'yes' : 'no'}`,
+    `Stream output: ${config.streamOutput ? `yes (${config.streamIntervalMs} ms)` : 'no'}`,
     `Registered Kiro commands: ${commandRegistry.mapping.size}`
   ].join('\n');
 }

@@ -49,6 +49,7 @@ KIRO_CONNECT_KIRO_CLI=/path/to/kiro-cli
 KIRO_CONNECT_WORK_DIR=/path/to/your/workspace
 KIRO_CONNECT_MODEL=claude-opus-4.7
 KIRO_CONNECT_TRUST_ALL_TOOLS=1
+KIRO_CONNECT_STREAM_OUTPUT=1
 ```
 
 Do not commit `~/.kiro-connect/.env` or any file containing real tokens.
@@ -163,6 +164,17 @@ Each Telegram chat has its own working directory state.
 
 Normal chat messages and slash command passthrough run from that directory.
 
+## Streaming Output
+
+Kiro Connect streams Kiro CLI output into Telegram while the command is still running. It edits the current Telegram message at a throttled interval and starts a new message when the output exceeds Telegram's single-message limit.
+
+```bash
+KIRO_CONNECT_STREAM_OUTPUT=1
+KIRO_CONNECT_STREAM_INTERVAL_MS=1200
+```
+
+Set `KIRO_CONNECT_STREAM_OUTPUT=0` to return to one-shot replies after command completion.
+
 ## Security Notes
 
 - Keep `KIRO_CONNECT_ALLOWED_USERS` set unless you intentionally want an open bot.
@@ -183,4 +195,6 @@ Normal chat messages and slash command passthrough run from that directory.
 | `KIRO_CONNECT_STATE_DIR` | Local state directory. Defaults to `~/.kiro-connect`. |
 | `KIRO_CONNECT_TRUST_ALL_TOOLS` | Defaults to `1`; passes `--trust-all-tools` for Kiro chat commands. Set to `0` to disable. |
 | `KIRO_CONNECT_TRUST_TOOLS` | Passed as `--trust-tools=<value>` when trust-all is disabled. |
+| `KIRO_CONNECT_STREAM_OUTPUT` | Defaults to `1`; streams Kiro CLI output to Telegram while commands are running. |
+| `KIRO_CONNECT_STREAM_INTERVAL_MS` | Edit interval for streamed Telegram messages. Defaults to `1200`. |
 | `KIRO_CONNECT_TIMEOUT_MS` | Timeout for each Kiro CLI command. |
