@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 
-const version = '0.1.1';
+const version = '0.1.2';
 const scriptPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(scriptPath), '..');
 const home = os.homedir();
@@ -22,7 +22,7 @@ const config = {
   defaultAgent: env('KIRO_CONNECT_AGENT') || '',
   stateDir: env('KIRO_CONNECT_STATE_DIR') || path.join(home, '.kiro-connect'),
   timeoutMs: Number(env('KIRO_CONNECT_TIMEOUT_MS') || 900000),
-  trustAllTools: ['1', 'true', 'yes'].includes(String(env('KIRO_CONNECT_TRUST_ALL_TOOLS') || '').toLowerCase()),
+  trustAllTools: parseBool(env('KIRO_CONNECT_TRUST_ALL_TOOLS'), true),
   trustTools: env('KIRO_CONNECT_TRUST_TOOLS')
 };
 
@@ -203,10 +203,6 @@ async function handleChatMessage(chatId, text) {
   const args = ['chat', '--no-interactive', '--resume', '--wrap', 'never'];
   if (chat.model) args.push('--model', chat.model);
   if (chat.agent) args.push('--agent', chat.agent);
-  if (config.trustAllTools) args.push('--trust-all-tools');
-  if (config.trustTools !== undefined && !config.trustAllTools) {
-    args.push(`--trust-tools=${config.trustTools}`);
-  }
   args.push(text);
   await runAndReply(chatId, args);
 }
@@ -342,9 +338,10 @@ async function runAndReply(chatId, args) {
 
   const chat = getChatState(chatId);
   await telegram('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
-  log(`chat=${chatId} cwd=${chat.workDir} run: ${config.kiroCli} ${args.join(' ')}`);
+  const finalArgs = withDefaultTrustArgs(args);
+  log(`chat=${chatId} cwd=${chat.workDir} run: ${config.kiroCli} ${finalArgs.join(' ')}`);
 
-  const result = await runKiro(args, { cwd: chat.workDir });
+  const result = await runKiro(finalArgs, { cwd: chat.workDir });
   const header = result.timedOut
     ? `Command timed out after ${config.timeoutMs} ms.\n\n`
     : result.code === 0
@@ -387,6 +384,27 @@ function runKiro(args, options) {
       resolve({ code, stdout, stderr, timedOut });
     });
   });
+}
+
+function withDefaultTrustArgs(args) {
+  if (!shouldApplyTrustArgs(args) || hasTrustArgs(args)) return args;
+  const trustArgs = buildTrustArgs();
+  if (!trustArgs.length) return args;
+  return [args[0], ...trustArgs, ...args.slice(1)];
+}
+
+function shouldApplyTrustArgs(args) {
+  return args[0] === 'chat' && !args.includes('--list-models');
+}
+
+function hasTrustArgs(args) {
+  return args.some(arg => arg === '--trust-all-tools' || arg.startsWith('--trust-tools'));
+}
+
+function buildTrustArgs() {
+  if (config.trustAllTools) return ['--trust-all-tools'];
+  if (config.trustTools !== undefined) return [`--trust-tools=${config.trustTools}`];
+  return [];
 }
 
 async function getKiroModels(cwd) {
@@ -771,6 +789,11 @@ function parseCsv(value) {
     .split(',')
     .map(v => v.trim())
     .filter(Boolean);
+}
+
+function parseBool(value, fallback = false) {
+  if (value === undefined || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
 function readJson(file, fallback) {

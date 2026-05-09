@@ -48,6 +48,7 @@ KIRO_CONNECT_ALLOWED_USERS=123456789
 KIRO_CONNECT_KIRO_CLI=/path/to/kiro-cli
 KIRO_CONNECT_WORK_DIR=/path/to/your/workspace
 KIRO_CONNECT_MODEL=claude-opus-4.7
+KIRO_CONNECT_TRUST_ALL_TOOLS=1
 ```
 
 Do not commit `~/.kiro-connect/.env` or any file containing real tokens.
@@ -166,7 +167,7 @@ Normal chat messages and slash command passthrough run from that directory.
 
 - Keep `KIRO_CONNECT_ALLOWED_USERS` set unless you intentionally want an open bot.
 - Treat Telegram access as access to your local Kiro CLI.
-- Be careful with `KIRO_CONNECT_TRUST_ALL_TOOLS=1`; it allows Kiro CLI tools to run without interactive confirmation.
+- `KIRO_CONNECT_TRUST_ALL_TOOLS` defaults to `1`, which allows Kiro CLI tools to run without interactive confirmation. Set it to `0` if you want Kiro CLI approval prompts.
 - `.env`, logs, and local state are intentionally ignored by git.
 
 ## Configuration
@@ -180,6 +181,6 @@ Normal chat messages and slash command passthrough run from that directory.
 | `KIRO_CONNECT_MODEL` | Default Kiro chat model. |
 | `KIRO_CONNECT_AGENT` | Optional default Kiro agent. |
 | `KIRO_CONNECT_STATE_DIR` | Local state directory. Defaults to `~/.kiro-connect`. |
-| `KIRO_CONNECT_TRUST_ALL_TOOLS` | Set to `1` to pass `--trust-all-tools` for normal chat messages. |
+| `KIRO_CONNECT_TRUST_ALL_TOOLS` | Defaults to `1`; passes `--trust-all-tools` for Kiro chat commands. Set to `0` to disable. |
 | `KIRO_CONNECT_TRUST_TOOLS` | Passed as `--trust-tools=<value>` when trust-all is disabled. |
 | `KIRO_CONNECT_TIMEOUT_MS` | Timeout for each Kiro CLI command. |
