@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 
-const version = '0.1.3';
+const version = '0.1.4';
 const telegramMessageLimit = 3900;
 const scriptPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(scriptPath), '..');
@@ -347,7 +347,7 @@ async function runAndReply(chatId, args) {
   if (!config.streamOutput) {
     const result = await runKiro(finalArgs, { cwd: chat.workDir });
     const header = resultStatusText(result);
-    const body = stripAnsi([result.stdout, result.stderr].filter(Boolean).join('\n').trim());
+    const body = cleanKiroOutput([result.stdout, result.stderr].filter(Boolean).join('\n')).trim();
     await sendMessage(chatId, `${header}${body || '(no output)'}`);
     return;
   }
@@ -424,9 +424,8 @@ function createTelegramStream(chatId) {
   }
 
   function append(chunk) {
-    const text = stripAnsi(chunk);
-    if (!text) return;
-    output += text;
+    if (!chunk) return;
+    output += chunk;
     if (!closed) scheduleFlush();
   }
 
@@ -463,16 +462,21 @@ function createTelegramStream(chatId) {
 
   async function flushNow() {
     await start();
-    if (!output) return;
+    const cleanOutput = cleanKiroOutput(output);
+    if (!cleanOutput) return;
 
-    while (output.length - currentStart > telegramMessageLimit) {
-      await upsertCurrent(output.slice(currentStart, currentStart + telegramMessageLimit));
+    if (currentStart > cleanOutput.length) {
+      currentStart = Math.max(0, cleanOutput.length - telegramMessageLimit);
+    }
+
+    while (cleanOutput.length - currentStart > telegramMessageLimit) {
+      await upsertCurrent(cleanOutput.slice(currentStart, currentStart + telegramMessageLimit));
       currentStart += telegramMessageLimit;
       currentMessageId = null;
       currentRendered = '';
     }
 
-    const chunk = output.slice(currentStart);
+    const chunk = cleanOutput.slice(currentStart);
     if (chunk) {
       await upsertCurrent(chunk);
     }
@@ -832,6 +836,24 @@ function compactDescription(text) {
 
 function stripAnsi(text) {
   return String(text || '').replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+}
+
+function cleanKiroOutput(text) {
+  let value = stripAnsi(text).replace(/\r/g, '');
+  const trustMarker = 'Learn more at https://kiro.dev/docs/cli/chat/security/#using-tools-trust-all-safely';
+  const trimmedStart = value.trimStart();
+
+  if (trimmedStart.startsWith('All tools are now trusted')) {
+    const markerIndex = value.indexOf(trustMarker);
+    if (markerIndex === -1) return '';
+    value = value.slice(markerIndex + trustMarker.length);
+  }
+
+  return value
+    .replace(/^\s*>\s?/, '')
+    .replace(/\n?\s*▸ Credits:[\s\S]*$/u, '')
+    .trimStart()
+    .trimEnd();
 }
 
 function chunkText(text, size) {
