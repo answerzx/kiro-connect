@@ -1,0 +1,18 @@
+{
+  "name": "kiro-connect",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "Kiro-only Telegram bridge for local Kiro CLI.",
+  "bin": {
+    "kiro-connect": "./src/kiro-connect.mjs"
+  },
+  "scripts": {
+    "start": "node ./src/kiro-connect.mjs",
+    "commands": "node ./src/kiro-connect.mjs --print-commands",
+    "check": "node --check ./src/kiro-connect.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
